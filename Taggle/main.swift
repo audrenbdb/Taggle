@@ -188,9 +188,13 @@ class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func updateIcon() {
-        if let button = statusItem.button {
-            button.title = externalEnabled ? "⬜" : "⬛"
-        }
+        guard let button = statusItem.button else { return }
+        let symbolName = externalEnabled ? "display" : "rectangle.slash"
+        let description = externalEnabled ? "External display active" : "External display disabled"
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: description)
+        image?.isTemplate = true // adapts to menu bar light/dark theme
+        button.image = image
+        button.title = ""
     }
 
     // MARK: - Display Management
