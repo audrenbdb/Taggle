@@ -5,7 +5,8 @@ import UserNotifications
 // MARK: - Private CoreGraphics APIs (loaded dynamically)
 
 typealias CGSMainConnectionIDFunc = @convention(c) () -> Int32
-typealias CGSConfigureDisplayEnabledFunc = @convention(c) (Int32, CGDirectDisplayID, Bool) -> CGError
+// enabled param as Int32 (0/1) instead of Bool to match C ABI
+typealias CGSConfigureDisplayEnabledFunc = @convention(c) (Int32, CGDirectDisplayID, Int32) -> CGError
 
 let cgHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY)
 
@@ -244,8 +245,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         externalEnabled.toggle()
         let cid = getConn()
-        NSLog("Taggle: toggling display \(extID), cid=\(cid), enabled=\(externalEnabled)")
-        let err = configDisplay(cid, extID, externalEnabled)
+        let enabledVal: Int32 = externalEnabled ? 1 : 0
+        NSLog("Taggle: about to call CGSConfigureDisplayEnabled(cid=\(cid), display=\(extID), enabled=\(enabledVal))")
+        fflush(stdout)
+        let err = configDisplay(cid, extID, enabledVal)
+        NSLog("Taggle: call returned \(err.rawValue)")
 
         if err != .success {
             externalEnabled.toggle()
