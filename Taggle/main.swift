@@ -194,13 +194,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         var count: UInt32 = 0
         CGGetOnlineDisplayList(maxDisplays, &displays, &count)
 
-        let mainID = CGMainDisplayID()
+        NSLog("Taggle: found \(count) online display(s)")
         var result: [(CGDirectDisplayID, String)] = []
         for i in 0..<Int(count) {
             let id = displays[i]
-            if id == mainID { continue }
             let w = CGDisplayPixelsWide(id)
             let h = CGDisplayPixelsHigh(id)
+            let builtin = CGDisplayIsBuiltin(id) != 0
+            NSLog("Taggle:   display \(id): \(w)x\(h), builtin=\(builtin)")
+            if builtin { continue }
             let name = "Display \(id) (\(w)x\(h))"
             result.append((id, name))
         }
