@@ -2,13 +2,22 @@ import Cocoa
 import Carbon
 import UserNotifications
 
-// MARK: - Private CoreGraphics APIs
+// MARK: - Private CoreGraphics APIs (loaded dynamically)
 
-@_silgen_name("CGSMainConnectionID")
-func CGSMainConnectionID() -> Int
+typealias CGSMainConnectionIDFunc = @convention(c) () -> Int32
+typealias CGSConfigureDisplayEnabledFunc = @convention(c) (Int32, CGDirectDisplayID, Bool) -> CGError
 
-@_silgen_name("CGSConfigureDisplayEnabled")
-func CGSConfigureDisplayEnabled(_ cid: Int, _ displayID: CGDirectDisplayID, _ enabled: Bool) -> CGError
+let cgHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY)
+
+let _CGSMainConnectionID: CGSMainConnectionIDFunc? = {
+    guard let h = cgHandle, let sym = dlsym(h, "CGSMainConnectionID") else { return nil }
+    return unsafeBitCast(sym, to: CGSMainConnectionIDFunc.self)
+}()
+
+let _CGSConfigureDisplayEnabled: CGSConfigureDisplayEnabledFunc? = {
+    guard let h = cgHandle, let sym = dlsym(h, "CGSConfigureDisplayEnabled") else { return nil }
+    return unsafeBitCast(sym, to: CGSConfigureDisplayEnabledFunc.self)
+}()
 
 // MARK: - Shortcut Recording
 
@@ -226,8 +235,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        guard let getConn = _CGSMainConnectionID, let configDisplay = _CGSConfigureDisplayEnabled else {
+            notify("CGS APIs not available on this macOS version")
+            return
+        }
+
         externalEnabled.toggle()
-        let err = CGSConfigureDisplayEnabled(CGSMainConnectionID(), extID, externalEnabled)
+        let cid = getConn()
+        NSLog("Taggle: toggling display \(extID), cid=\(cid), enabled=\(externalEnabled)")
+        let err = configDisplay(cid, extID, externalEnabled)
 
         if err != .success {
             externalEnabled.toggle()
