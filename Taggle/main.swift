@@ -4,16 +4,12 @@ import UserNotifications
 
 // MARK: - Private CoreGraphics APIs (loaded dynamically)
 
-typealias CGSMainConnectionIDFunc = @convention(c) () -> Int32
-// enabled param as Int32 (0/1) instead of Bool to match C ABI
-typealias CGSConfigureDisplayEnabledFunc = @convention(c) (Int32, CGDirectDisplayID, Int32) -> CGError
+// CGSConfigureDisplayEnabled takes a CGDisplayConfigRef (opaque pointer),
+// NOT a connection ID. Must be wrapped in CGBeginDisplayConfiguration /
+// CGCompleteDisplayConfiguration.
+typealias CGSConfigureDisplayEnabledFunc = @convention(c) (CGDisplayConfigRef?, CGDirectDisplayID, Int32) -> CGError
 
 let cgHandle = dlopen("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics", RTLD_LAZY)
-
-let _CGSMainConnectionID: CGSMainConnectionIDFunc? = {
-    guard let h = cgHandle, let sym = dlsym(h, "CGSMainConnectionID") else { return nil }
-    return unsafeBitCast(sym, to: CGSMainConnectionIDFunc.self)
-}()
 
 let _CGSConfigureDisplayEnabled: CGSConfigureDisplayEnabledFunc? = {
     guard let h = cgHandle, let sym = dlsym(h, "CGSConfigureDisplayEnabled") else { return nil }
@@ -121,7 +117,7 @@ struct TagglePrefs {
 
 // MARK: - App Delegate
 
-class AppDelegate: NSObject, NSApplicationDelegate {
+class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     var statusItem: NSStatusItem!
     var externalEnabled = true
     var hotKeyRef: EventHotKeyRef?
@@ -146,8 +142,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Display selection submenu
         let displayMenu = NSMenu()
-        let displays = getDisplayList()
+        var displays = getDisplayList()
         let selectedID = TagglePrefs.displayID
+
+        // Include the saved display even if currently offline (disabled)
+        if selectedID != 0, !displays.contains(where: { $0.0 == selectedID }) {
+            displays.append((selectedID, "Display \(selectedID) (offline)"))
+        }
 
         for (id, name) in displays {
             let item = NSMenuItem(title: name, action: #selector(selectDisplay(_:)), keyEquivalent: "")
@@ -178,7 +179,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit Taggle", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
 
+        menu.delegate = self
         statusItem.menu = menu
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        rebuildMenu()
     }
 
     func updateIcon() {
@@ -211,15 +217,15 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func resolveTargetDisplay() -> CGDirectDisplayID? {
+        // Trust the saved ID even if currently offline — a disabled display
+        // drops off CGGetOnlineDisplayList but its hardware ID remains valid
+        // for re-enabling.
         let saved = TagglePrefs.displayID
-        let displays = getDisplayList()
-
-        // If saved display is still connected, use it
-        if saved != 0, displays.contains(where: { $0.0 == saved }) {
+        if saved != 0 {
             return saved
         }
-        // Fallback: first external display
-        if let first = displays.first {
+        // No saved selection yet — pick first external from current online list
+        if let first = getDisplayList().first {
             TagglePrefs.displayID = first.0
             rebuildMenu()
             return first.0
@@ -238,23 +244,36 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        guard let getConn = _CGSMainConnectionID, let configDisplay = _CGSConfigureDisplayEnabled else {
-            notify("CGS APIs not available on this macOS version")
+        guard let configDisplay = _CGSConfigureDisplayEnabled else {
+            notify("CGSConfigureDisplayEnabled not available")
             return
         }
 
-        externalEnabled.toggle()
-        let cid = getConn()
-        let enabledVal: Int32 = externalEnabled ? 1 : 0
-        NSLog("Taggle: about to call CGSConfigureDisplayEnabled(cid=\(cid), display=\(extID), enabled=\(enabledVal))")
-        fflush(stdout)
-        let err = configDisplay(cid, extID, enabledVal)
-        NSLog("Taggle: call returned \(err.rawValue)")
+        // Determine real state from the OS, not from in-memory flag.
+        // A display we previously disabled won't appear in the online list.
+        let isCurrentlyOnline = getDisplayList().contains(where: { $0.0 == extID })
+        let targetEnabled: Int32 = isCurrentlyOnline ? 0 : 1
+        NSLog("Taggle: display \(extID) currently online=\(isCurrentlyOnline), targetEnabled=\(targetEnabled)")
 
-        if err != .success {
-            externalEnabled.toggle()
-            notify("Failed to toggle display (error \(err.rawValue))")
+        var configRef: CGDisplayConfigRef?
+        let beginErr = CGBeginDisplayConfiguration(&configRef)
+        NSLog("Taggle: CGBeginDisplayConfiguration returned \(beginErr.rawValue)")
+
+        guard beginErr == .success, configRef != nil else {
+            notify("CGBeginDisplayConfiguration failed (\(beginErr.rawValue))")
+            return
+        }
+
+        let err = configDisplay(configRef, extID, targetEnabled)
+        NSLog("Taggle: CGSConfigureDisplayEnabled returned \(err.rawValue)")
+
+        let completeErr = CGCompleteDisplayConfiguration(configRef, .permanently)
+        NSLog("Taggle: CGCompleteDisplayConfiguration returned \(completeErr.rawValue)")
+
+        if err != .success || completeErr != .success {
+            notify("Failed to toggle display (config=\(err.rawValue), complete=\(completeErr.rawValue))")
         } else {
+            externalEnabled = targetEnabled == 1
             notify(externalEnabled ? "Display ON" : "Display OFF")
         }
         updateIcon()
